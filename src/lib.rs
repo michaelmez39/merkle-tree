@@ -66,11 +66,6 @@ where
     }
 }
 
-struct UpdateStatus {
-    updated: bool,
-    hash: u64,
-}
-
 impl<T, S> MerkleTree<T, S>
 where
     S: BuildHasher,
@@ -100,7 +95,7 @@ where
                         new_leaf.get_hash().hash(&mut block_hasher);
 
                         let mut new_branch = Box::new(MerkleNode::Branch(BranchNode {
-                            left: Box::new(MerkleNode::Leaf(std::mem::replace(leaf, None))),
+                            left: Box::new(MerkleNode::Leaf(leaf.take())),
                             right: new_leaf,
                             hash: block_hasher.finish(),
                         }));
@@ -111,14 +106,7 @@ where
                 }
             }
         } else {
-            let mut hasher = self.hasher.build_hasher();
-            data.hash(&mut hasher);
-            let mut new_node = LeafNode {
-                data: Box::new(data),
-                block_hash: hasher.finish(),
-            };
-            self.head
-                .replace(Box::new(MerkleNode::Leaf(Some(new_node))));
+            self.head.replace(MerkleNode::new_leaf(data, &self.hasher));
         }
     }
 }
