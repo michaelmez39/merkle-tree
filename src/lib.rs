@@ -1,39 +1,56 @@
 #![allow(unused)]
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
-use std::hash::{BuildHasher, Hash, Hasher, BuildHasherDefault};
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 
 type DefaultBuildHasher = BuildHasherDefault<DefaultHasher>;
 
 #[derive(PartialEq, Debug)]
 struct MerkleTree<T, S> {
     hasher: S,
-    head: Option<Box<MerkleNode<T>>>
+    head: Option<Box<MerkleNode<T>>>,
 }
 
 #[derive(PartialEq, Debug)]
 struct BranchNode<T> {
     hash: u64,
     left: Box<MerkleNode<T>>,
-    right: Box<MerkleNode<T>>
+    right: Box<MerkleNode<T>>,
 }
 
 #[derive(PartialEq, Debug)]
 struct LeafNode<T> {
     block_hash: u64,
-    data: T
+    data: Box<T>,
 }
 
 #[derive(PartialEq, Debug)]
 enum MerkleNode<T> {
     Branch(BranchNode<T>),
-    Leaf(LeafNode<T>),
-    Empty
+    Leaf(Option<LeafNode<T>>),
 }
 
-impl<T> Default for MerkleNode<T> {
-    fn default() -> Self {
-        MerkleNode::Empty
+impl<T> MerkleNode<T> {
+    fn new_leaf<S>(data: T, build_hasher: &S) -> Box<MerkleNode<T>>
+    where
+        T: Hash,
+        S: BuildHasher,
+    {
+        let mut hasher = build_hasher.build_hasher();
+        data.hash(&mut hasher);
+
+        Box::new(MerkleNode::Leaf(Some(LeafNode {
+            data: Box::new(data),
+            block_hash: hasher.finish(),
+        })))
+    }
+
+    fn get_hash(&self) -> u64 {
+        match self {
+            MerkleNode::Branch(branch) => branch.hash,
+            MerkleNode::Leaf(Some(leaf)) => leaf.block_hash,
+            _ => 0,
+        }
     }
 }
 
@@ -51,54 +68,57 @@ where
 
 struct UpdateStatus {
     updated: bool,
-    hash: u64
+    hash: u64,
 }
 
-impl<T, S> MerkleTree<T,S>
-where S: BuildHasher, T: Hash {
-    // fn push_rec(cursor: MerkleNode<T>, node: Box<MerkleNode<T>>) -> false {
-    //     match cursor {
-    //         MerkleNode::Branch(branch) => {
-            
-    //         }
-    //         MerkleNode::Leaf(leaf) => {
-    //             let bran
-    //         }
-    //     }
-    // }
-
+impl<T, S> MerkleTree<T, S>
+where
+    S: BuildHasher,
+    T: Hash,
+{
     fn push(&mut self, data: T) {
-        let mut hasher = self.hasher.build_hasher();
-        data.hash(&mut hasher);
-        let mut new_node = LeafNode {
-            data,
-            block_hash: hasher.finish()
-        };
-
-        if let Some(mut head) = self.head {
+        if let Some(mut head) = self.head.as_mut() {
             let mut queue = VecDeque::new();
-            queue.push_back(&mut head);
+            queue.push_back(head);
             while let Some(current) = queue.pop_front() {
-                match current.as_mut() {
+                let current_borrow = current.as_mut();
+                match current_borrow {
                     MerkleNode::Branch(branch) => {
                         queue.push_back(&mut branch.left);
                         queue.push_back(&mut branch.right);
                     }
                     MerkleNode::Leaf(leaf) => {
+                        let mut new_leaf = MerkleNode::new_leaf(data, &self.hasher);
+
+                        let mut hasher = self.hasher.build_hasher();
+                        new_leaf.get_hash().hash(&mut hasher);
                         let mut block_hasher = self.hasher.build_hasher();
-                        leaf.block_hash.hash(&mut block_hasher);
-                        new_node.block_hash.hash(&mut block_hasher);
-                        let new_branch = MerkleNode::Branch(BranchNode {
-                            left: std::mem::take(current),
-                            right: Box::new(MerkleNode::Leaf(new_node)),
-                            hash: block_hasher.finish()
-                        })
+                        if let Some(LeafNode { block_hash, .. }) = leaf {
+                            block_hash.hash(&mut block_hasher)
+                        }
+
+                        new_leaf.get_hash().hash(&mut block_hasher);
+
+                        let mut new_branch = Box::new(MerkleNode::Branch(BranchNode {
+                            left: Box::new(MerkleNode::Leaf(std::mem::replace(leaf, None))),
+                            right: new_leaf,
+                            hash: block_hasher.finish(),
+                        }));
+
+                        std::mem::swap(current_borrow, &mut new_branch);
+                        return;
                     }
-                    MerkleNode::Empty => unreachable!("Tree should not have empty nodes")
                 }
             }
         } else {
-            self.head.replace(Box::new(MerkleNode::Leaf(new_node)));
+            let mut hasher = self.hasher.build_hasher();
+            data.hash(&mut hasher);
+            let mut new_node = LeafNode {
+                data: Box::new(data),
+                block_hash: hasher.finish(),
+            };
+            self.head
+                .replace(Box::new(MerkleNode::Leaf(Some(new_node))));
         }
     }
 }
@@ -110,12 +130,9 @@ mod test {
     #[test]
     fn empty_same_node() {
         let tree: MerkleTree<u64, BuildHasherDefault<DefaultHasher>> = MerkleTree::new();
-        assert_eq!(
-            tree.head,
-            None
-        );
-        
+        assert_eq!(tree.head, None);
     }
+
     #[test]
     fn empty_same_hash() {
         let tree: MerkleTree<u64, DefaultBuildHasher> = MerkleTree::new();
